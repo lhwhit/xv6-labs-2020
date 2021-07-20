@@ -233,6 +233,23 @@ userinit(void)
   release(&p->lock);
 }
 
+// get number of proc
+uint64
+nproc(void)
+{
+  uint64 counter = 0;
+  struct proc *p;
+
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if(p->state != UNUSED) {
+      ++counter;
+    }
+    release(&p->lock);
+  }
+  return counter;
+}
+
 // Grow or shrink user memory by n bytes.
 // Return 0 on success, -1 on failure.
 int
@@ -276,6 +293,9 @@ fork(void)
   np->sz = p->sz;
 
   np->parent = p;
+
+  // copy trace mask
+  np->trace_mask = p->trace_mask;
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
@@ -693,3 +713,4 @@ procdump(void)
     printf("\n");
   }
 }
+
