@@ -29,6 +29,8 @@ trapinithart(void)
   w_stvec((uint64)kernelvec);
 }
 
+extern pte_t* walk(pagetable_t, uint64, int);
+
 //
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
@@ -65,6 +67,64 @@ usertrap(void)
     intr_on();
 
     syscall();
+  }else if(r_scause() == 15) {
+    uint64 va = PGROUNDDOWN(r_stval());
+	  pte_t *pte;
+	  if(va >= MAXVA) {
+	    printf("va is larger than MAXVA!\n");
+	    p->killed = 1;
+      goto end;
+  	}
+
+	  if(va > p->sz){
+	    printf("va is larger than sz!\n");
+	    p->killed = 1;
+	    goto end;
+	  }
+
+	  if((pte = walk(p->pagetable, va, 0)) == 0) {
+	    printf("usertrap(): page not found\n");
+	    p->killed=1;
+	    goto end;
+	  } 
+	  // 分配一个新页面
+	  if(((*pte) & PTE_COW) == 0 ||((*pte) & PTE_V) == 0 || ((*pte) & PTE_U) == 0) {
+	    printf("usertrap: pte not exist or it's not cow page\n");
+	    p->killed = 1;
+	    goto end;
+	  }
+	  if((*pte) & PTE_COW) {
+ 	    uint64 pa = PTE2PA(*pte);
+	    acquire_refcnt();
+	    uint ref = kgetref((void*)pa);
+	    if(ref == 1) { // 引用次数为1，直接使用该页
+	      *pte = ((*pte) & (~PTE_COW)) | PTE_W;
+	    } else { // 引用次数大于1，分配物理页
+	      char* mem = kalloc();
+        if(mem == 0) {
+	        printf("usertrap(): memery alloc fault\n");
+          p->killed = 1;
+	        release_refcnt();
+	        goto end;
+	      }
+        // 将旧页面复制到新页面，并用PTE_W和(~PTE_COW)设置新页的PTE
+        memmove(mem, (char*)pa, PGSIZE);
+        uint flag = (PTE_FLAGS(*pte) | PTE_W) & (~PTE_COW);
+	      if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, flag) != 0) {
+	  	    kfree(mem);
+		      printf("usertrap(): can not map page\n");
+		      p->killed = 1;
+		      release_refcnt();
+		      goto end;
+	      }
+		    kfree((void*)pa); //旧页引用次数减1
+	    }
+	    release_refcnt();
+	  } else {
+	    printf("usertrap(): cna not caused bu cow\n");
+	    p->killed = 1;
+	    goto end;
+	  }
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
@@ -72,7 +132,7 @@ usertrap(void)
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
   }
-
+end:
   if(p->killed)
     exit(-1);
 
